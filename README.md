@@ -213,42 +213,77 @@ HIP achieves fairness through probabilistic mechanisms rather than deterministic
 
 ---
 
-## Embedded Timing Obfuscation: Micro-Noise Without Delays
+## RTRO: Behavioral Obfuscation Alongside Execution
 
-### The RTRO Principle
+### The Obfuscation Layer Principle
 
-HIP incorporates the principle of embedded micro-noise in execution timing, but with a critical constraint: **no artificial delays**.
+RTRO (Real-Time Resource Obfuscation) is a kernel-integrated behavioral obfuscation layer that operates alongside execution to confuse external observation of system behavior. RTRO intercepts and transforms externally visible system signals without modifying actual execution.
 
-**What Embedded Obfuscation Does:**
-- Introduces micro-level variation into natural execution timing
-- Operates at low-level execution granularity
-- Remains always active
-- Blends into real execution activity
+**Core Principle:**
+The system executes normally. Only what can be observed externally about execution is obfuscated.
 
-**What Embedded Obfuscation Does NOT Do:**
-- Introduce artificial delays to tasks
+**What RTRO Does:**
+- Operates at the kernel boundary to intercept observable signals
+- Randomizes reported metrics (CPU usage, memory patterns, I/O timing)
+- Obscures container activity attribution in system interfaces
+- Blurs correlation between observed signals and specific container activity
+- Runs alongside execution without touching execution itself
+
+**What RTRO Does NOT Do:**
+- Introduce artificial delays to any tasks
+- Modify actual CPU execution timing
 - Attempt to make all executions look statistically similar
 - Trade performance for obfuscation
 - Create resource starvation through padding
-- Delay short tasks or mask long tasks deliberately
 
-### Why Forced Uniformity Fails
+### RTRO Architecture
 
-Attempts to make all executions "look similar" through artificial manipulation create new vulnerabilities:
+RTRO lives inside the kernel at event boundaries:
 
-- **Resource Starvation:** Delaying short tasks wastes CPU cycles
-- **Observable Patterns:** Artificial delays become detectable patterns themselves
-- **Performance Degradation:** Uniformity overhead becomes measurable
-- **False Security:** Forced similarity masks rather than eliminates signals
+```
+[ Container ]
+     ↓
+[ Kernel Arbitration ]
+     ↓
+[ RTRO Layer (Obfuscation) ]
+     ↓
+[ Observable Outputs / Interfaces ]
+```
 
-### Natural Variation as Obfuscation
+RTRO activates at all system interface boundaries where information could leak.
 
-HIP's approach relies on natural variation enhanced by micro-noise:
+### What RTRO Achieves
 
-- Execution timing naturally varies due to hardware and workload factors
-- Micro-noise amplifies this natural variation
-- No performance penalty because no delays are introduced
-- Variation is unpredictable without being artificially uniform
+**Software-Visible Metrics (Fully Obfuscated):**
+- CPU usage per container (reported values randomized)
+- Memory usage reports (actual allocation hidden)
+- Process lists and container visibility
+- Scheduler state visibility
+- System API responses about container activity
+
+**Kernel-Level Observability (Fully Obfuscated):**
+- Which container appears active in reports
+- Execution attribution in logs and metrics
+- Event sequencing visibility
+- Container activity indicators
+
+**Inter-Container Visibility (Fully Blocked):**
+Containers cannot see other containers' activity, scheduling decisions, execution ordering, or resource allocation.
+
+### What RTRO Cannot Fully Hide
+
+**Hardware-Level Signals:**
+An attacker with sufficient capability can still observe cache timing differences, branch prediction behavior, power consumption patterns, and memory bus contention. These are hardware-level side channels outside kernel control.
+
+### Why HIP Still Works Despite Hardware Leakage
+
+Because HIP removed shared state, global coordination, deterministic scheduling, observable retry patterns, and visible ordering, even if hardware leaks something, there is no structured signal to correlate it with. Attackers get noise without structure.
+
+### The Strongest Argument
+
+Traditional systems leak *what* is happening, *when* it happens, and *in what order*.
+
+HIP + RTRO hides *what* (no metadata exposure), obscures *when* (RTRO + non-deterministic arbitration), and destroys *order* (entropy-based scheduling).
 
 ---
 
