@@ -367,6 +367,12 @@ The system executes normally. Only what can be observed externally about executi
 - Trade performance for obfuscation
 - Create resource starvation through padding
 
+### When RTRO Is Not Needed
+
+**Single-User Air-Gapped Systems:** When the system operates in a physically secure environment with a single trusted user, there is no adversarial observer to confuse. The isolation boundaries themselves provide sufficient protection without behavioral obfuscation overhead.
+
+**Performance-Critical Quantum-Like Workloads:** For systems like QIOS focused on quantum-like computing performance, RTRO adds unnecessary overhead. The threat model (single user, air-gapped, physical security) does not require obfuscation of behavioral signals.
+
 ### RTRO Architecture
 
 RTRO lives inside the kernel at event boundaries:
@@ -376,14 +382,14 @@ RTRO lives inside the kernel at event boundaries:
      ↓
 [ Kernel Arbitration ]
      ↓
-[ RTRO Layer (Obfuscation) ]
+[ RTRO Layer (Obfuscation) ]  ← Optional: Not present in QIOS
      ↓
 [ Observable Outputs / Interfaces ]
 ```
 
 RTRO activates at all system interface boundaries where information could leak.
 
-### What RTRO Achieves
+### What RTRO Achieves (When Present)
 
 **Software-Visible Metrics (Fully Obfuscated):**
 - CPU usage per container (reported values randomized)
@@ -414,7 +420,9 @@ Because HIP removed shared state, global coordination, deterministic scheduling,
 
 Traditional systems leak *what* is happening, *when* it happens, and *in what order*.
 
-HIP + RTRO hides *what* (no metadata exposure), obscures *when* (RTRO + non-deterministic arbitration), and destroys *order* (entropy-based scheduling).
+HIP + RTRO (when present) hides *what* (no metadata exposure), obscures *when* (RTRO + non-deterministic arbitration), and destroys *order* (entropy-based scheduling).
+
+HIP without RTRO (QIOS mode) still hides *what* and destroys *order* through isolation architecture alone.
 
 ---
 
@@ -552,6 +560,61 @@ HIP provides properties about privacy preservation that exceed what software-onl
 
 ---
 
+## Quantum-Like Classical Computing: Properties Enabled by Architecture
+
+### Understanding Quantum-Like Properties Through HIP Architecture
+
+HIP's architectural decisions directly enable quantum-like computational properties. This is not about adding quantum-like features to a classical system—it is about recognizing that eliminating coordination mechanisms creates the foundational conditions for quantum-like behavior.
+
+### Property One: Parallel Pathway Maintenance Through Lane Architecture
+
+**The Problem:** Traditional systems serialize execution through global locks and deterministic scheduling, forcing all computation through single pathways that must complete before alternatives can be explored.
+
+**HIP's Solution:** Lane-based architecture enables multiple parallel execution lanes per container, with each lane representing an independent computational pathway. The kernel arbitrates across lanes without imposing ordering, allowing multiple solution approaches to progress simultaneously.
+
+**Why This Is Quantum-Like:** Multiple computational states exist and progress simultaneously. Unlike quantum superposition that collapses unpredictably, HIP's parallel pathways persist until resolution is logically required—determined by the application, not environmental decoherence.
+
+**No "Collapse to Result" Required:** The misconception in quantum computing is that superposition must "collapse" to a single result. This adds overhead and complexity. In HIP's architecture, parallel pathways simply converge when the application requests coordination. There is no probabilistic collapse—there is deterministic application-controlled resolution.
+
+### Property Two: Interference-Free Processing Through Isolation
+
+**The Problem:** Traditional systems create interference between components through shared resources, shared state, and coordination mechanisms. This interference creates unpredictable behavior and limits parallelism.
+
+**HIP's Solution:** Complete isolation between components eliminates interference by architectural design. Components execute independently without the possibility of affecting each other's state or timing.
+
+**Why This Is Quantum-Like:** Quantum entanglement enables coordination without interference. HIP achieves similar properties through isolation boundaries that allow coordination (via channels) without interference (via memory isolation). Components can maintain coordinated relationships without the fragility of quantum mechanical entanglement.
+
+### Property Three: Event-Driven Temporal Coordination
+
+**The Problem:** Time-based coordination (sleep, timeouts, fixed scheduling) creates observable patterns and limits the ability to correlate events across temporal distances.
+
+**HIP's Solution:** All coordination is event-driven. Components react to events, not time. Retry mechanisms trigger on resource availability events, not timeout intervals. Scheduling responds to execution completion events, not timer interrupts.
+
+**Why This Is Quantum-Like:** Temporal correlation between distant events can be maintained without requiring continuous communication. Events at different times can be correlated through event chains rather than shared temporal reference frames.
+
+### Property Four: Non-Deterministic Execution Without Chaos
+
+**The Problem:** Deterministic execution creates predictable patterns that enable timing attacks and limit computational exploration. Pure randomness creates chaos without purpose.
+
+**HIP's Solution:** Entropy-based scheduling provides non-deterministic execution order without chaos. The kernel uses cryptographic entropy to select among valid execution candidates, preventing predictability while maintaining correctness guarantees.
+
+**Why This Is Quantum-Like:** Quantum computation leverages quantum randomness constructively. HIP leverages cryptographic entropy constructively—non-deterministic but purposeful, unpredictable but correct.
+
+### How These Properties Enable Quantum-Like Computation
+
+These four properties, achieved through HIP's architectural decisions, create the conditions for quantum-like classical computation:
+
+1. **Parallel pathway maintenance** enables exploration of solution spaces without sequential constraint
+2. **Interference-free processing** enables independent computation without coordination overhead
+3. **Event-driven temporal coordination** enables correlation across time without timing signals
+4. **Non-deterministic execution** enables unpredictable but correct computation
+
+**No New Features Required:** These properties are not additional features layered onto HIP—they emerge naturally from the elimination of traditional coordination mechanisms. By removing global locks, shared state, and deterministic ordering, HIP creates a computational environment where quantum-like properties are the default behavior.
+
+**No Collapse Required:** Unlike quantum computation that requires measurement-induced collapse, HIP's parallel pathways resolve through application logic. The application decides when to coordinate results, not physics. This eliminates the overhead and complexity of collapse mechanics.
+
+---
+
 ## Implementation Roadmap: From Theory to Practice
 
 ### Phase 1: Theoretical Foundation Validation (Months 1-6)
@@ -647,51 +710,6 @@ HIP provides properties about privacy preservation that exceed what software-onl
 
 ---
 
-## Future Research: Quantum-Like Classical Computing
-
-### Bridging Quantum and Classical Approaches
-
-The recognition that quantum computing faces fundamental practical limitations for widespread deployment has motivated research into classical computing approaches that can achieve quantum-like computational benefits without requiring extreme environmental conditions or error-prone quantum hardware.
-
-**Quantum-Like Superposition in Classical Systems:** Temporal-analog processing can implement quantum-like superposition where multiple computational states exist simultaneously until environmental feedback or decision requirements force state resolution into specific outcomes. This classical superposition capability provides quantum-like computational benefits while operating at room temperature with conventional electronic devices.
-
-**Quantum-Like Entanglement Through Temporal Correlation:** Temporal-analog processing can implement quantum-like entanglement through temporal correlations between distant processing elements that enable coordinated responses and information sharing across distributed computational networks.
-
-**Probabilistic Computing with Uncertainty Quantification:** Temporal-analog processing naturally implements probabilistic computation where uncertainty and confidence levels are explicitly represented and processed throughout computational operations.
-
-### HIP as Foundation for Non-Binary Computing
-
-HIP's isolation-first design philosophy positions it as an ideal foundation for quantum-inspired classical computing systems:
-
-- The elimination of global locks removes interference patterns that would disrupt temporal-analog processing
-- Complete component isolation enables parallel temporal patterns representing different computational possibilities
-- Zero-trust architecture is compatible with probabilistic computing models
-- Multi-dimensional isolation supports distributed temporal correlation systems
-- Lightweight handshake mode enables performance-critical quantum-like workloads
-
-### Research Directions for HIP Evolution
-
-**Near-Term Research:**
-- Integration of probabilistic scheduling algorithms
-- Implementation of entropy-based fairness mechanisms
-- Development of side-channel resistant communication protocols
-- Event-driven coordination without timing signals
-- Lightweight handshake optimization for quantum-like workloads
-
-**Medium-Term Research:**
-- Temporal-analog processing substrate integration
-- Neuromorphic component isolation models
-- Uncertainty quantification in system services
-- Dynamic mode switching between cryptographic and lightweight
-
-**Long-Term Research:**
-- Non-binary instruction set architecture support
-- Quantum-like superposition in classical hardware
-- Temporal entanglement for distributed coordination
-- Native quantum-like instruction support
-
----
-
 ## Theoretical Contributions to Computer Science
 
 ### Paradigm Contributions
@@ -706,6 +724,8 @@ HIP contributes several theoretical breakthroughs to computer science:
 
 **Privacy Theory:** Provides foundations for privacy-by-architecture rather than privacy-by-policy approaches.
 
+**Quantum-Like Computation Theory:** Demonstrates that quantum-like computational properties emerge naturally from the elimination of coordination mechanisms, not from the addition of quantum-inspired features.
+
 ### Practical Contributions
 
 **Operating System Design:** Establishes new principles for OS architecture that transcend traditional limitations.
@@ -715,6 +735,8 @@ HIP contributes several theoretical breakthroughs to computer science:
 **Privacy Engineering:** Shows how systematic isolation can achieve privacy guarantees that software-only approaches cannot provide.
 
 **Performance Engineering:** Proves that proper isolation can enhance rather than constrain system performance.
+
+**Quantum-Like Computing:** Provides a practical path to quantum-like computational properties without quantum hardware limitations.
 
 ---
 
@@ -727,6 +749,8 @@ HIP demonstrates that the traditional assumptions about operating system archite
 The paradigm provides the theoretical foundation for operating systems that achieve security guarantees, performance characteristics, and unlimited functionality expansion while maintaining user privacy and system reliability. HIP represents not just an improved operating system architecture but a fundamental transformation in how we approach the design of complex computational systems.
 
 The dual communication mode architecture ensures HIP can serve both high-security networked environments and performance-critical quantum-like computing workloads with appropriate security-performance trade-offs for each deployment context.
+
+The quantum-like properties enabled by HIP's architecture—parallel pathway maintenance, interference-free processing, event-driven temporal coordination, and non-deterministic execution—emerge naturally from the elimination of coordination mechanisms rather than requiring additional features or overhead. This makes HIP-based systems inherently suitable for quantum-like computational workloads without modification.
 
 Through systematic development and validation, HIP establishes the foundation for next-generation operating systems that serve as secure, private, and high-performance platforms for unlimited innovation while protecting users from the security and privacy vulnerabilities that plague traditional computing architectures.
 
