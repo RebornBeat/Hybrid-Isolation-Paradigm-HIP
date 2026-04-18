@@ -3,397 +3,420 @@
 
 ## Paradigm Overview
 
-The Hybrid Isolation Paradigm (HIP) represents a theoretical framework for operating system architecture where complete isolation at every computational level enhances rather than hinders system performance and capability. Unlike traditional OS architectures that force trade-offs between security, performance, and functionality, HIP demonstrates that systematic isolation can create security benefits while enabling capabilities that were impossible with conventional approaches.
+The Hybrid Isolation Paradigm (HIP) represents a foundational theoretical framework for operating system architecture where complete isolation at every computational level enhances rather than hinders system performance and capability. Unlike traditional OS architectures that force trade-offs between security, performance, and functionality, HIP demonstrates that systematic isolation can create multiplicative security benefits while enabling computational properties that were impossible with conventional approaches.
 
-HIP solves the fundamental OS trilemma: traditional approaches cannot simultaneously achieve maximum security, optimal performance, and complete functionality. Monolithic architectures provide performance through tight integration but allow security vulnerabilities to cascade. Microkernel architectures provide isolation but suffer from communication overhead. HIP proves that isolation intelligence embedded at every architectural level can transcend these limitations by creating isolation that strengthens rather than weakens system capabilities.
+HIP solves the fundamental OS trilemma: traditional approaches cannot simultaneously achieve maximum security, optimal performance, and complete functionality. Monolithic architectures provide performance through tight integration but allow security vulnerabilities to cascade system-wide when any component is compromised. Microkernel architectures provide isolation through message-passing but suffer from communication overhead that limits practical performance. Layered architectures create structured organization but vulnerabilities in lower layers compromise all higher layers regardless of the higher layer's own correctness. HIP proves that isolation intelligence embedded at every architectural level transcends these limitations by creating isolation that strengthens rather than weakens system capabilities, delivering performance benefits alongside security guarantees rather than trading one for the other.
 
 ---
 
-## Core Innovation: Multi-Dimensional Isolation Architecture
+## The Root Problem: Why Traditional OS Architectures Fail
 
-### The Traditional OS Architecture Limitation
+### Global Locks Create Compounding Problems
 
-Current operating system structures create a fundamental architecture gap between security requirements and functional requirements. Traditional approaches force binary choices:
+Traditional operating systems rely on global locks and shared-state coordination to manage competing access to shared resources. This design decision creates problems that compound at every scale:
 
-**Monolithic Architecture:** Performance through tight integration, but security vulnerabilities cascade throughout the entire system when any component is compromised.
+**Timing Side Channels:** Wait times reveal contention. Lock acquisition patterns reveal workload characteristics. Execution ordering reveals system state. Shared memory exposes indirect observation channels between components that should be isolated. Attackers who observe lock behavior can learn about the activities of other components by measuring contention patterns, timing acquisitions, and observing ordering. This side channel persists regardless of how much effort is applied to other security measures because the root cause is architectural.
 
-**Microkernel Architecture:** Isolation through message-passing, but performance overhead from context switching and communication costs.
+**Performance Bottlenecks:** Components must serialize access to any shared resource regardless of whether their specific operations actually conflict. Cache coherency traffic between processor cores grows with contention. Coordination overhead scales with the number of competing components, causing performance to degrade precisely when the system is most loaded. Adding more hardware does not help; it adds more potential contenders for shared locks.
 
-**Layered Architecture:** Structured organization through abstraction layers, but vulnerabilities in lower layers compromise all higher layers.
+**Security Cascade Failures:** When isolation boundaries are defined by kernel code rather than by hardware-enforced component separation, compromise of any kernel component can reach data belonging to any other component. A single compromised driver can expose kernel memory. A single service failure can bring down the entire system.
 
-**Modular Architecture:** Flexibility through loadable modules, but module interactions create attack vectors and privilege escalation paths.
+### The Cascade Failure Problem
 
-**Virtual Machine Architecture:** Isolation through hypervisor separation, but significant overhead and limited native hardware access.
+Traditional OS designs create dependency chains where the security of any component depends on the security of every other component. Monolithic kernels share memory between drivers, file systems, and network stacks. Compromising one compromises all. Microkernels improve this but still require message-passing infrastructure that becomes an attack surface. None of these approaches address the root cause: the assumption that components must share state to cooperate.
 
-### HIP's Solution: Hybrid Isolation Intelligence
+---
 
-HIP transcends these limitations through an architecture that combines the benefits of traditional approaches while eliminating their individual weaknesses:
+## Core Innovation: Eliminating Global Locks as an Architectural Principle
 
-**Layered Foundation with Modular Flexibility:** Every layer implements modular design, enabling flexibility without compromising layer isolation.
+HIP's foundational innovation is the complete elimination of global locks and shared-state coordination from the system architecture. This is not a mitigation strategy. It is removal of global locks as an architectural element.
 
-**Minimal Kernel with Complete Isolation:** Minimal kernel overhead combined with complete isolation at every component level.
+### What Is Eliminated
 
-**Complete Vertical Isolation:** Layer to module to submodule to process to thread isolation ensures no component can compromise any other.
+**No global locks anywhere in the system.** No component waits on another component's lock. Contention does not exist because there is nothing to contend over.
 
-**Horizontal Isolation Intelligence:** Components at the same level operate with zero trust and complete isolation while maintaining necessary cooperation.
+**No shared state between containers.** Containers cannot observe each other's state. There are no shared memory regions between containers. There is no shared kernel state that multiple containers can observe simultaneously.
+
+**No deterministic system-wide ordering.** System-wide ordering guarantees are eliminated at the scheduling level. Ordering exists only as local, private constraints within individual lanes inside containers. No container can observe the ordering of events in another container.
+
+**No observable retry behavior.** When resources are unavailable, requesting containers stall completely — no spinning, no polling, no retry loops. There is nothing for an observer to measure.
+
+### What Replaces Global Locks: Event-Driven Kernel Coordination
+
+When resources are unavailable, requesting containers stall. The kernel records the dependency. When resources become available, the kernel emits an event signal and selects from stalled containers using weighted entropy arbitration. No time-based backoff. No polling. No observable retry frequency. No timing signals from retry behavior.
+
+This is the foundation of the Catch and Release mechanism described below.
+
+---
+
+## Catch and Release: The Core Execution Gating Mechanism
+
+Catch and Release is HIP's mechanism for managing execution without global locks. It replaces lock acquisition entirely.
+
+### The Traditional Model vs Catch and Release
+
+**Traditional lock-based system:**
+A thread wants a resource, acquires the lock, blocks if unavailable, enters a lock queue, waits until the lock is released, retries acquisition, eventually executes. Every step is observable: the waiting, the retry, the ordering within the queue.
+
+**Catch and Release:**
+A container has work to do. The kernel checks resource availability. If resources are available, the container's event enters the Ready Pool and competes for execution. If resources are unavailable, the container enters the Stalled List and waits invisibly. When resources become available, the kernel moves the container from the Stalled List to the Ready Pool. The container never spins, never polls, never retries. There is nothing for an observer to measure.
+
+### The Ready Pool
+
+The Ready Pool contains head events from active lanes whose required resources are available. Events in the Ready Pool are competing for selection. An event in the Ready Pool can execute right now — it is not waiting for resources, only for its turn to be selected.
+
+**Events enter the Ready Pool when:**
+- New work is created and all required resources are available
+- A resource becomes available for a container that was stalled, moving it from the Stalled List
+
+**Events remain in the Ready Pool when:**
+- They are not selected in the current selection cycle
+- Events not selected stay in the Ready Pool. They do not go back to the Stalled List. Not being selected means the event is still ready; it simply was not chosen this cycle by weighted entropy selection.
+
+**Events exit the Ready Pool when:**
+- Selected for execution (enters executing state)
+- A required resource becomes unavailable while in the Ready Pool, which is a rare condition involving external resource revocation
+
+### The Stalled List
+
+The Stalled List contains containers that cannot currently execute because a required resource is unavailable. This is not a queue in any traditional sense — there is no ordering within the Stalled List relevant to future selection. The Stalled List is a dependency tracking structure: it records which container is waiting for which resource.
+
+**Entries enter the Stalled List when:**
+- A container attempts execution and a required resource is unavailable
+- This happens after the container is selected from the Ready Pool and begins executing, but encounters a resource constraint during execution
+
+**Entries exit the Stalled List when:**
+- The required resource becomes available, triggering a kernel event signal
+- The kernel moves the container from the Stalled List to the Ready Pool
+- The container has no further awareness of the time it spent stalled
+
+### Container States and Transitions
+
+Each container's head event can be in one of four states:
+
+**INACTIVE:** The container has no pending work. It is not in the Ready Pool or the Stalled List.
+
+**READY:** The container's head event is in the Ready Pool. Resources are available. The container is competing for selection via weighted entropy.
+
+**EXECUTING:** The container's head event was selected and is currently running on an execution core.
+
+**STALLED:** The container's head event is in the Stalled List. A required resource is unavailable. The container is not competing for selection.
+
+**Transitions:**
+- INACTIVE → READY: New work created with all resources available
+- INACTIVE → STALLED: New work created but resource unavailable
+- READY → EXECUTING: Selected by weighted entropy arbitration
+- EXECUTING → READY: Execution completes, next event is ready, resources available
+- EXECUTING → STALLED: A resource is needed but unavailable during execution
+- EXECUTING → INACTIVE: Execution completes, no further work pending
+- STALLED → READY: Required resource becomes available, kernel emits event, container moves to Ready Pool
+
+### Resource Signals
+
+When a resource becomes available, the kernel queries the Stalled List to find all containers waiting for that resource and moves each of them to the Ready Pool. This is event-driven: the resource release triggers the transition, not polling or retry by the stalled containers.
+
+Resources that can cause stalls include memory allocation limits, I/O bandwidth, channel buffer availability (waiting to send when the destination buffer is full, or waiting to receive when the buffer is empty), and any other constrained system resource. Each resource type has its own availability tracking and emits its own signals when availability changes.
+
+---
+
+## Lane-Based Execution Architecture
+
+The lane architecture is HIP's mechanism for enabling ordering and parallelism within containers while eliminating global coordination at the system level.
+
+### What a Lane Is
+
+A lane is an isolated execution context within a container. Each lane has:
+- A dedicated memory region inaccessible to other lanes
+- An independent event queue private to the lane
+- No shared locks with any other lane
+- Coordination with other lanes only through explicitly established channels
+- Optional internal FIFO ordering within the lane, private to that lane
+
+Lanes are not threads in the traditional sense. Traditional threads share memory and coordinate through mutexes. Lanes have independent memory and coordinate through events. The isolation between lanes is architectural.
+
+### The Kernel's Constrained View
+
+The kernel is architecturally constrained to see only the current head event of each active lane. This constraint is non-negotiable and non-configurable:
+
+- The kernel does not see queue depth within any lane
+- The kernel does not see events behind the head event
+- The kernel does not see relationships between lanes in the same container
+- The kernel does not see future events
+- The kernel does not see the nature of the computation a lane is performing
+
+This constraint exists because any additional visibility would allow the kernel's behavior to be used as an oracle for system state. If the kernel behaved differently based on queue depth, an observer could infer queue depth by observing kernel behavior. By limiting the kernel to head events only, the kernel cannot leak information about lane internals through its behavior.
+
+### Multiple Parallel Lanes
+
+Each container can have multiple lanes executing simultaneously. No container is architecturally reduced to a single active event. Multiple lanes within a container pursue different work independently. The container defines the security boundary; lanes within the container represent parallel execution pathways within that boundary.
+
+When the head event of a lane stalls, that lane has no event in the Ready Pool. Events behind the head in the lane's internal queue are unaffected and invisible to the kernel. When the head event resolves, it returns to the Ready Pool as the lane's representative. If the head event completes, the next event in the internal queue becomes the head and is evaluated for readiness.
+
+---
+
+## Weighted Entropy Selection: The Scheduling Mechanism
+
+Weighted entropy selection is the kernel's method for choosing which ready event executes next. It is a single mechanism that, through configuration alone, spans the full range from maximum unpredictability to proportional fairness.
+
+### The Ticket Analogy
+
+Think of each event in the Ready Pool as having a number of tickets equal to its weight. When the kernel selects among ready events, it selects one ticket uniformly at random using cryptographic entropy. An event with weight 3 has three tickets. An event with weight 1 has one ticket.
+
+Example: One system event (weight 3) and three user events (weight 1 each). The selection pool contains 3 + 1 + 1 + 1 = 6 tickets. System event selection probability: 3/6 = 50%. Each user event selection probability: 1/6 ≈ 17%.
+
+The selection mechanism remains entropy-based. Weights skew the probability distribution without introducing determinism. No event is guaranteed to be selected or guaranteed not to be selected. The system remains non-deterministic.
+
+### Equal Weights Equal Full Entropy
+
+When all events have the same weight, weighted entropy reduces to pure entropy. Every event has the same selection probability. Selection is purely random. This means weighted entropy with equal weights is the full entropy model. The mechanism is unified; configuration determines behavior.
+
+### Weight Classes
+
+Components are grouped into weight classes. Events from components in the same class receive the same weight. Common classes:
+
+**System class:** Components whose responsiveness directly affects the user experience. Window managers, input handlers, compositors, audio servers. In profiles where interactive responsiveness matters, these receive higher weight.
+
+**User class:** Standard application containers. The primary workload of the system.
+
+**Background class:** Non-critical processes that should not interfere with interactive use.
+
+### What Weights Do Not Reintroduce
+
+Weighted entropy selection does not reintroduce:
+- Global locks: weights are configuration data, not synchronization
+- Shared state between containers: each container's weight assignment is not shared
+- Deterministic ordering: entropy remains the selection mechanism
+- Coordination overhead: weight lookup is constant time per event
+
+### Anti-Starvation (Optional Mechanism)
+
+Pure weighted entropy can, by chance, delay a low-weight lane for longer than intended. Anti-starvation tracking provides a probabilistic floor.
+
+**What anti-starvation tracks:** Time each head event spends in the Ready Pool, not time spent stalled. Stalling is a resource constraint, not a selection fairness issue. Only Ready Pool time — time when the event is competing for selection but has not been chosen — counts toward the anti-starvation threshold.
+
+**Timer behavior through state transitions:**
+- Event enters Ready Pool: timer starts accumulating
+- Event exits Ready Pool to execute: timer pauses, accumulated time preserved
+- Event stalls (moves to Stalled List): timer already paused from execution state; accumulated time preserved
+- Event returns from Stalled List to Ready Pool: timer resumes accumulating from preserved value
+- New event becomes head: timer resets to zero for the new event
+
+**When threshold is exceeded:** The lane's event receives priority selection in the next cycle regardless of weight. After selection, the timer resets.
+
+**Why this is not present in Maximum Isolation:** Anti-starvation introduces a deadline-based behavioral pattern. When a lane exceeds the threshold, behavior becomes predictable. An observer who knows the threshold can anticipate the priority selection. In Maximum Isolation, any predictable behavioral pattern is undesirable. Anti-starvation is not compiled into Maximum Isolation builds.
+
+### Full Fairness (Optional Mechanism)
+
+Full fairness tracking ensures proportional execution time across all lanes. This provides the most predictable performance and the strongest guarantees against stall impact on user experience. It introduces more predictability into kernel behavior than anti-starvation alone and is appropriate for performance-focused deployments where adversarial behavioral analysis is not the primary concern.
+
+---
+
+## Multi-Core Execution: Single Pool, Routing-Based
+
+### The Architecture
+
+HIP implements multi-core execution through a single Ready Pool managed by a dedicated selector, which routes selected events to available execution cores.
+
+**Single Ready Pool:** One pool for the entire system. All head events from all active lanes compete in one weighted entropy selection. This eliminates the complexity of sharded pools and their associated load balancing problems.
+
+**Single Selector:** One kernel thread owns the Ready Pool and the Stalled List. Because ownership is exclusive, no locks are needed. The selector:
+- Collects resource availability signals from resource managers
+- Updates the Ready Pool (moving containers from Stalled List to Ready Pool as resources become available)
+- Applies weighted entropy selection to choose the next event
+- Tracks which execution cores are available
+- Routes the selected event to an available core
+
+**Execution Cores:** Each core receives events from the selector. Cores execute events, then signal completion or stall conditions back to the selector. Cores do not access the Ready Pool directly. All pool interaction happens through the selector via message passing.
+
+**No Global Locks:** The selector owns the pool exclusively. Cores never touch the pool. Communication between selector and cores uses message queues, not shared mutable state. No coordination mechanism exists between cores. There is nothing to lock.
+
+### Cache-Aware Routing
+
+When multiple cores are available for a given event, the selector can route based on cache affinity. If a core has recently executed events from the same container, its cache likely contains relevant data. Routing to that core reduces cache cold-start overhead. This is a performance optimization made by the selector; it does not require shared state between cores and does not require locks.
+
+### Scalability
+
+For typical systems with 4 to 32 cores and hundreds to low thousands of containers, a single selector is not a bottleneck. The selector's per-cycle work is minimal: signal processing, pool updates, weighted entropy computation, and routing. At extreme scale, multiple selectors managing partitioned container sets become appropriate, but this is not needed for the deployment contexts HIP currently targets.
 
 ---
 
 ## HIP Communication Modes: Two Distinct Approaches
 
-### Fundamental Design Principle
-
-HIP supports two distinct inter-component communication modes, allowing system architects to choose the appropriate balance between security overhead and performance based on threat model, deployment environment, and application requirements. These modes are not gradients of a single system—they are distinct architectural choices that produce meaningfully different systems suited to different use cases.
+HIP defines two inter-component communication modes. These are architectural choices for distinct threat models, not gradients of security.
 
 ### Mode 1: Cryptographic Inter-Communication
 
-**Purpose:** High-security environments, multi-tenant systems, networked systems, systems requiring audit trails and non-repudiation.
+**Purpose:** Systems with adversarial observers. Multi-user systems. Networked systems. Systems requiring audit trails and non-repudiation.
 
-**Characteristics:**
-- All inter-component messages cryptographically authenticated
-- Component identity verified through digital signatures
-- Audit trails with cryptographic integrity
-- Forward secrecy for message history
-- Tamper-evident communication logs
-- Full non-repudiation capability
+**How it works:** Every message crossing a container boundary is cryptographically signed by the sender and verified by the receiver. Message origin is provable. Audit trails have cryptographic integrity. Replay attacks are prevented through nonce management. The kernel assists with channel establishment but does not inspect message content.
 
-**Security Guarantees:**
-- Message authenticity verified at every boundary crossing
-- Message integrity verified through cryptographic hashing
-- Source authentication confirmed via signature verification
-- Replay attack prevention through nonce management
-- Protection against message injection across isolation boundaries
+**Security guarantees:** Message authenticity verified at every boundary crossing. Message integrity verified through cryptographic hashing. Source authentication confirmed via signature verification. Replay attack prevention. Non-repudiation: origin cannot be denied after the fact.
 
-**When to Use:**
-- Systems exposed to network threats
-- Multi-user environments
-- Compliance requirements requiring audit and non-repudiation
-- High-value data processing
-- Systems where component compromise has severe consequences for other users or systems
+**Performance characteristics:** Cryptographic verification adds deterministic, bounded overhead per message. This overhead is the cost of the guarantee.
+
+**When this mode is correct:** Multi-user systems where different users must not be able to forge messages as each other. Networked systems where messages could originate from outside the physical hardware. Systems where audit requirements demand proof of message origin.
 
 ### Mode 2: Lightweight Handshake Inter-Communication
 
-**Purpose:** Offline systems, air-gapped environments, single-user systems, performance-critical applications where an adversarial observer is absent.
+**Purpose:** Single-user offline systems. Air-gapped environments. Physically secured computation systems. Systems where adversarial inter-component communication is not a realistic threat.
 
-**Characteristics:**
-- Minimal handshake protocol establishing component identity at channel creation
-- No cryptographic signatures on individual messages
-- Component identity established once through secure channel handshake
-- Trust maintained through isolation boundaries rather than per-message verification
-- Reduced per-message overhead
-- Event-based channel lifecycle management
+**How it works:** Channel identity is established once through a handshake when the channel is created. After establishment, messages flow without per-message cryptographic verification. Isolation boundaries prevent message injection from outside the established channel relationship. Physical security prevents external observation of channel content.
 
-**Security Guarantees:**
-- Component identity established through initial handshake
-- Channel integrity maintained through hardware isolation boundaries
-- No message forgery possible across isolation boundaries
-- Physical security perimeter provides the outer protection layer
+**Security guarantees:** Component identity established through initial handshake. Channel integrity maintained through hardware isolation boundaries. Message forgery across isolation boundaries is architecturally prevented. Physical security perimeter provides the outer protection layer.
 
-**When to Use:**
-- Offline or air-gapped systems with physical security
-- Single-user systems where there is no adversarial observer
-- Performance-critical workloads where cryptographic overhead affects computation
-- Systems where isolation boundaries provide sufficient protection without per-message verification
-- Research and development environments
+**Performance characteristics:** Near-zero per-message overhead after channel establishment. The handshake cost is paid once.
 
-### Mode Selection
+**When this mode is correct:** Single-user offline systems where the user is the only entity with system access. Air-gapped systems where physical security is the outer boundary. Compute-focused systems where performance is critical and the threat model does not include inter-component message forgery.
 
-| Factor | Cryptographic Mode | Lightweight Handshake |
-|--------|-------------------|----------------------|
-| Network Exposure | Yes | No or Minimal |
-| Multi-User | Yes | Single User |
-| Audit Requirements | Full Cryptographic | Event Logging |
-| Performance Priority | Balanced | Maximum |
-| Physical Security | Any | Required |
-| Threat Model | Adversarial Network | Physical Security Boundary |
-| Offline Operation | Supported | Optimized |
+**Important:** Lightweight handshake is not a security compromise in its intended context. In a single-user physically secured offline system, there is no adversary who could exploit unverified messages. Adding cryptographic overhead would protect against a threat that does not exist in that environment while reducing performance for the actual workload. Correct threat modeling identifies lightweight handshake as the appropriate choice.
 
-### Lightweight Handshake Implementation Model
+### Mode Selection Criteria
 
-The lightweight handshake mode operates through channel establishment rather than per-message authentication:
-
-**Channel Establishment:**
-1. Component A requests a communication channel with Component B
-2. Both components verify they are within the same isolation boundary scope
-3. Both components agree on a channel identifier
-4. Channel is established and messages flow without per-message cryptographic verification
-
-**Channel Integrity Through Isolation:**
-Isolation boundaries prevent message injection from outside the channel relationship. Hardware memory protection prevents message tampering. Channel identifiers bind messages to established relationships. Physical access control prevents direct memory inspection from external actors.
-
-**Audit Trail in Lightweight Mode:**
-Event logging records that Component A communicated with Component B. Individual message content is not cryptographically verified but the channel relationship and event sequence are logged. Audit integrity is protected by isolation boundaries and physical security rather than cryptographic signatures.
+| Context | Network | Users | Audit | Mode |
+|---|---|---|---|---|
+| Enterprise server | Yes | Multiple | Required | Cryptographic |
+| Personal workstation | Yes | Single | Optional | Cryptographic or Lightweight |
+| Air-gapped compute | No | Single | Not required | Lightweight |
+| Offline research | No | Single | Not required | Lightweight |
+| Embedded appliance | No | None | Not required | Lightweight |
 
 ---
 
-## Theoretical Framework: The Five-Dimensional Isolation Model
+## Channel Communication: Complete Security Model
+
+### What Channels Are
+
+A channel is a point-to-point communication link between exactly two containers. Every channel is created by mutual agreement, bound to specific container identifiers, isolated from all other channels, and subject to rate limits and terms established at creation time.
+
+### What Channels Are Not
+
+Channels are not broadcast mechanisms. A message on Channel A→B reaches only B. Channels are not routable — B cannot forward A's messages to C through the channel infrastructure without explicit application logic, and that logic requires B's deliberate cooperation. Channels are not discoverable — a container cannot enumerate what channels exist in the system or what other containers exist.
+
+### Channel Establishment Protocol
+
+**Request:** Container A sends a channel request to the kernel with the target container identifier and proposed terms.
+
+**Kernel validation:** The kernel verifies A's permission to create channels, A's permission to reach B specifically, and A's channel quota status.
+
+**Delivery:** The kernel delivers the request to B, including A's container identifier and proposed terms. B learns A's identifier and the proposed terms. B learns nothing else about A.
+
+**Acceptance:** B accepts (potentially with modified terms) or rejects. The decision is B's alone.
+
+**Creation:** If accepted, the kernel creates the channel with agreed parameters including directionality, rate limits, message format expectations, lifetime, and encryption requirements in cryptographic mode.
+
+**Notification:** Both A and B receive confirmation with the channel identifier.
+
+### Channel Security Properties
+
+The kernel enforces: only A can send on Channel A→B, only B can receive, rate limits are enforced without exception, and closed channels cannot be used.
+
+Applications enforce: semantic correctness of message content, behavior matching agreed terms, and decisions about what information to share.
+
+### Channel Security Concerns and Resolutions
+
+**Information flows through channels that would not flow through isolation alone:** This is intentional. Channels are the mechanism for authorized information sharing. A container chooses what to send and who to establish channels with. Unauthorized information flow requires a compromised container or a channel established under false pretenses, both of which require prior compromise.
+
+**A container could probe system structure by requesting channels:** Mitigated by channel creation rate limits, quotas on pending and active channel requests, and administrative policy controlling which containers can reach which others. A container cannot discover what other containers exist without already having an identifier to target.
+
+**Timing-based covert channels between colluding containers:** In profiles with RTRO enabled, timing signals are obfuscated at the kernel boundary. In lightweight configurations, physical security and the trust model address this.
+
+---
+
+## RTRO: Real-Time Resource Obfuscation
+
+### What RTRO Is
+
+RTRO is a kernel-integrated behavioral obfuscation layer that operates alongside execution to confuse adversarial observation of system behavior. RTRO intercepts and transforms externally visible system signals without modifying actual execution.
+
+**Core principle:** The system executes normally. Only what can be observed externally about execution is obfuscated.
+
+**What RTRO does:** Randomizes reported CPU usage per container, memory usage reports, and event sequencing visibility in system interfaces. Obscures container activity attribution. Blurs correlation between observed signals and specific container activity. All of this at the kernel boundary, without changing execution.
+
+**What RTRO does not do:** Introduce artificial delays. Modify actual CPU execution timing. Force all executions to appear statistically similar. Trade performance for obfuscation. Create resource starvation.
+
+### When RTRO Is Appropriate
+
+RTRO is appropriate when an adversarial observer exists who could use behavioral signals to infer information. In multi-user or networked systems, other users or network-connected observers may attempt behavioral correlation attacks.
+
+### When RTRO Is Not Needed
+
+Single-user air-gapped systems with physical security have no adversarial observer. The user already knows what their own system is doing. RTRO adds overhead without protecting against any realistic threat in this context. Omitting RTRO from single-user air-gapped systems is correct threat modeling.
+
+### What RTRO Cannot Control
+
+Hardware-level signals — cache timing, branch prediction behavior, power consumption, memory bus contention — remain outside software control. HIP's architecture minimizes structured information available at hardware channels by eliminating global locks and shared state, but hardware physics cannot be controlled through software.
+
+### The Strongest Case for RTRO
+
+Traditional systems leak what is happening, when it happens, and in what order. HIP with RTRO hides what (no metadata exposure through isolation), obscures when (RTRO plus non-deterministic arbitration), and destroys order (entropy-based scheduling). Adversarial observers receive noise without structure to correlate.
+
+---
+
+## The Five-Dimensional Isolation Model
 
 ### Dimension 1: Vertical Layer Isolation
 
-The vertical isolation dimension implements a strict hierarchical security model where each layer operates with complete independence from all other layers while providing well-defined interface contracts.
+A strict hierarchical model where each layer operates with complete independence from all other layers while providing well-defined interface contracts.
 
-**Layer Structure:**
+**Layer structure:**
 ```
-Application Sandbox Layer [Complete process isolation]
+Application Sandbox Layer    [Complete process isolation]
          ↕ [Isolation Bridge]
-Service Abstraction Layer [Service containerization]
+Service Abstraction Layer    [Service containerization]
          ↕ [Isolation Bridge]
-Resource Management Layer [Hardware access control]
+Resource Management Layer    [Hardware access control]
          ↕ [Isolation Bridge]
-Kernel Isolation Layer [Minimal trusted computing base]
+Kernel Isolation Layer       [Minimal trusted computing base]
          ↕ [Isolation Bridge]
-Hardware Abstraction Layer [Direct hardware interface]
+Hardware Abstraction Layer   [Direct hardware interface]
 ```
 
-**Isolation Principles:**
-- **Downward Isolation:** Higher layers cannot directly access or observe lower layers
-- **Upward Isolation:** Lower layers cannot inject code or data into higher layers
-- **Lateral Isolation:** Components within the same layer cannot access each other
-- **Temporal Isolation:** Layer transitions occur through controlled event mechanisms
+**Downward isolation:** Higher layers cannot directly access or observe lower layers.
+**Upward isolation:** Lower layers cannot inject code or data into higher layers.
+**Lateral isolation:** Components within the same layer cannot access each other except through established channels.
+**Bridge control:** Isolation bridges between layers are the only permitted crossing points.
 
 ### Dimension 2: Horizontal Module Isolation
 
 Within each layer, every module operates as a completely isolated computational unit with zero implicit trust relationships.
 
-**Module Isolation Characteristics:**
-- **Memory Isolation:** Each module operates in completely separate memory spaces
-- **Process Isolation:** Modules cannot spawn processes outside their sandbox
-- **Resource Isolation:** Resource access requires explicit permission and routing
-- **Hardware Isolation:** Direct hardware access prevented without explicit delegation
+Module isolation characteristics: separate memory spaces, no cross-module process spawning, explicit permission required for resource access, hardware delegation required for direct hardware access.
 
 **Inter-Module Communication — Cryptographic Mode:**
-- Message-passing only through secure message channels
-- Every message cryptographically authenticated
-- All communications logged with cryptographic integrity
-- Every communication checked against policy matrices
-- Message origin provable through signatures
+All communication through secure message channels. Every message authenticated. All communications logged with cryptographic integrity. Every communication verified against policy matrices. Message origin provable through signatures.
 
 **Inter-Module Communication — Lightweight Handshake Mode:**
-- Message-passing only through established channels
-- Channel identity established at channel creation
-- Communications logged as events without cryptographic verification
-- Channel permissions checked at establishment
-- Message integrity protected by isolation boundaries
+All communication through established channels. Channel identity verified once at creation. Communications event-logged. Channel permissions verified at establishment. Message integrity protected by isolation boundaries.
 
 ### Dimension 3: Temporal Process Isolation
 
-Process execution occurs within isolation boundaries that prevent timing-based information leakage between components. This dimension distinguishes between kernel-level coordination and application-level time use.
+This dimension requires precise understanding. HIP distinguishes between kernel-level temporal coordination (prohibited) and application-level time use (available).
 
-**Kernel-Level Temporal Isolation (Non-Negotiable):**
-- Kernel coordination does not use time-based decisions
-- No fixed time-slice preemption at the kernel level
-- No time-based backoff for kernel retry mechanisms
-- Kernel selection among ready events uses entropy-based arbitration, not time
-- Timing signals are not introduced by kernel scheduling mechanisms
+**What is prohibited — Kernel-level temporal coordination:**
+The kernel does not use time to make its own coordination decisions. No fixed time-slice preemption. No time-based backoff for kernel retry mechanisms. No timer-driven kernel arbitration decisions. No time-based fairness calculations in the kernel scheduler.
 
-**Application-Level Time (Available and Appropriate):**
-Applications may use time freely. An application may request time-based wake events, implement timeouts, perform periodic operations, or use any time-based logic appropriate to its function. These operations are provided by the kernel as one event source among many. The kernel does not use time to make its own coordination decisions, but it serves timer events to applications that request them. The distinction is between time as an event source (acceptable) and time as a coordination mechanism in the kernel itself (prohibited).
+These prohibitions exist in adversarial profiles because kernel-level time use creates artificial temporal structure in kernel behavior that becomes an observable signal. An attacker measuring kernel scheduling intervals learns about the system's structure and load.
 
-**What Temporal Isolation Does NOT Prohibit:**
-- Application-level sleep operations
-- Application-level timeouts and deadlines
-- Periodic application operations
-- Time-based application logic of any kind
+**What is available — Application-level time:**
+Applications may use time freely and fully. The kernel provides timer events as one event source among many. Applications request timer events and receive them when the duration expires. Applications implement sleep operations through timer events. Applications set timeouts and deadlines through timer events. Applications perform periodic operations through recurring timer events. Any time-based application logic is appropriate and supported.
 
-**What Temporal Isolation Does Prohibit:**
-- Fixed time-slice preemption at the kernel coordination level
-- Time-based fairness mechanisms in the kernel scheduler
-- Timer-driven kernel arbitration decisions
-- Time-based backoff in kernel retry logic
+**The critical distinction:** Time generates events. Entropy selects events. The kernel checks whether pending timers have fired as part of collecting ready events in each selection cycle. When a timer fires, its event joins the ready pool. The kernel then applies weighted entropy to select from all ready events, which may include timer events. Time is an event source. It is not a coordination mechanism for the kernel.
 
 ### Dimension 4: Informational Data Isolation
 
-Information isolation ensures that data cannot leak between isolated components through any direct or indirect channels.
+Information isolation ensures data cannot leak between isolated components through any direct or indirect channels.
 
-**Data Isolation Techniques:**
-- Components cannot access each other's memory
-- Storage boundaries enforce component-specific access
-- Network communication isolated per component
-- Side-channel mitigation through isolation architecture
+**Mode 1 (Cryptographic):** Memory encryption with component-specific keys. Storage encryption with access-controlled keys. Network communication encryption.
 
-**Encryption Options (Mode-Dependent):**
-
-In Cryptographic Mode: Memory encryption with component-specific keys, storage encryption with access-controlled keys, and encrypted network communication are standard.
-
-In Lightweight Handshake Mode: Hardware memory protection enforces isolation, storage access is controlled through isolation boundaries, channel isolation maintains communication integrity, and optional encryption is available for specific sensitive data.
+**Mode 2 (Lightweight Handshake):** Hardware memory protection enforces isolation without encryption overhead. Storage access controlled through isolation boundaries. Channel isolation through established channel relationships. Optional encryption for specific sensitive data even in this mode.
 
 ### Dimension 5: Metadata Control Isolation
 
 Control metadata including permissions, policies, and configurations remains isolated and tamper-proof.
 
-**Cryptographic Mode Control Isolation:**
-- Immutable policies that cannot be modified by running processes
-- Distributed authority where no single component controls system-wide permissions
-- Cryptographic integrity for all control metadata
-- Multi-phase commitment protocols for policy changes
+**Cryptographic Mode:** Security policies cannot be modified by running processes. Distributed authority — no single component controls system-wide permissions. All control metadata has cryptographic integrity. Policy changes require multi-phase commitment protocols.
 
-**Lightweight Handshake Mode Control Isolation:**
-- Immutable policies that cannot be modified by running processes
-- Simplified authority appropriate for single-user systems
-- Isolation-boundary-protected integrity for control metadata
-- Event-logged policy changes without cryptographic verification
-
----
-
-## Architecture Transcendence: Beyond Traditional Limitations
-
-### Transcending the Monolithic-Microkernel Divide
-
-Traditional OS design forces a binary choice between monolithic performance and microkernel security. HIP achieves both through isolation intelligence.
-
-**HIP Advantages Over Monolithic:**
-- Complete component isolation prevents system-wide compromise
-- Component failure cannot cascade to other system components
-- Components can be updated without affecting others
-
-**HIP Advantages Over Microkernel:**
-- Optimized isolation reduces context switching overhead
-- Intelligent message routing minimizes communication latency
-- Isolated components scale independently
-
-### Transcending the Security-Performance Trade-off
-
-Traditional architectures assume security measures inherently reduce performance. HIP demonstrates that intelligent isolation can enhance performance through the elimination of coordination mechanisms that burden traditional systems.
-
-**Performance Through Isolation:**
-- Isolated components optimize cache usage without interference from other components
-- Complete isolation enables true parallel processing without coordination overhead
-- Isolation enables optimal resource allocation per component without negotiation
-- Isolation eliminates performance interference between components entirely
-
-### Transcending the Flexibility-Security Trade-off
-
-Traditional systems assume that increased flexibility necessarily creates security vulnerabilities. HIP proves that proper isolation enables both simultaneously.
-
-**Security Through Flexible Isolation:**
-- Isolated components can implement component-specific security approaches
-- Different components can use different security mechanisms appropriate to their role
-- Flexibility in one component cannot compromise others
-- Components can independently adopt new security measures without system-wide risk
-
----
-
-## No Global Locks: The Root of HIP's Isolation Property
-
-### Why Global Locks Are the Root Problem
-
-Traditional operating systems create fundamental vulnerabilities and performance bottlenecks through global locks and shared-state coordination. These mechanisms exist to manage competing access to shared resources, but they create problems that extend far beyond simple performance concerns:
-
-**Timing Signals from Global Locks:**
-Wait times reveal contention. Lock acquisition patterns reveal workload characteristics. Execution ordering reveals system state. Shared memory creates indirect observation channels between components.
-
-**Performance Bottlenecks from Global Locks:**
-Components must serialize access to any shared resource regardless of whether their operations actually conflict. Cache coherency traffic between processor cores becomes significant under contention. Coordination overhead grows with the number of competing components.
-
-### HIP's Fundamental Response: Remove the Root Cause
-
-HIP eliminates global locks across the entire system. This is not mitigation of the problems global locks create—it is removal of global locks as an architectural element.
-
-**No Global Locks:** The entire system operates without global synchronization points that create observable contention or performance bottlenecks.
-
-**No Shared State Between Components:** Components cannot observe each other's state, eliminating the information leakage channel that shared state creates.
-
-**No Deterministic System-Wide Ordering:** System-wide ordering guarantees are eliminated. Ordering exists only as local, application-scoped constraints within lanes.
-
-**Event-Driven Execution for Kernel Coordination:** Kernel retry and scheduling are entirely event-driven. When resources are unavailable, components stall without spinning. When resources become available, the kernel emits an event and selects from stalled components using entropy-based arbitration. No time-based backoff, no polling, no observable retry frequency.
-
-### Lane-Based Execution Architecture
-
-The lane architecture is HIP's mechanism for preserving ordering capability at the application level while eliminating global coordination at the system level.
-
-**What a Lane Is:**
-A lane is an isolated execution context with a dedicated memory region, an independent event queue, no shared locks, and event-driven coordination only. Lanes are not threads in the traditional sense. They do not share state. They do not coordinate through mutexes. They communicate only through established channels.
-
-**Container Level:**
-Each container can have multiple parallel lanes. Each lane maintains its own optional internal FIFO ordering. Internal lane ordering is fully private. No container is reduced to a single exposed event at any point.
-
-**Kernel View of Lanes:**
-The kernel sees only the head event of each active lane—the single next event ready to execute. The kernel does not see queue depth, does not see events queued behind the head event, does not see relationships between lanes in the same container, and does not see future events. This constraint is architectural and non-configurable. It ensures no component can infer system state from kernel behavior. The kernel selects among head events using entropy, not time and not ordering.
-
-**Ephemeral Ordering:**
-The kernel maintains only an ephemeral ordering of currently visible head events. This is not a global queue and not a persistent ordering structure. Ordering is local and cannot be reconstructed globally by any observer. Each event is treated as stateless and independent.
-
-**Probabilistic Fairness Without Starvation:**
-System-wide fairness operates through probabilistic mechanisms. Tokenized admission without shared state exposure. Entropy-based selection prevents predictable patterns. Bounded starvation through statistical guarantees rather than deterministic ordering. Event-driven retry triggers independent of time intervals.
-
----
-
-## Timing Attack Resistance
-
-### The Fundamental Problem with Global Coordination
-
-Traditional operating systems create timing vulnerabilities through global locks, shared state, and deterministic ordering. These mechanisms create observable behavior patterns:
-
-- Wait times reveal contention levels
-- Lock acquisition patterns reveal workload characteristics
-- Execution ordering reveals system state
-- Shared memory creates indirect observation channels
-
-### HIP's Architectural Response
-
-HIP eliminates timing attack surfaces by removing the root cause:
-
-- No global locks means no contention to observe
-- No shared state means no indirect observation channels
-- No deterministic ordering means no ordering to reconstruct
-- Event-driven execution means no retry timing to measure
-
-### When Timing Attack Resistance Is Critical
-
-Timing attack resistance is critical in environments where an adversarial observer exists—networked systems, multi-user systems, or systems where hardware or software surveillance is a concern. In these environments, HIP's architectural properties eliminate the structured signals that timing attacks require.
-
-### When Timing Attack Resistance Is Not Needed
-
-In single-user, air-gapped systems with physical security, there is no adversarial observer. The architectural properties of HIP still provide correctness and performance benefits, but the security framing of timing attack resistance does not apply. HIP implementations for such environments can retain the isolation architecture without the overhead of behavioral obfuscation.
-
----
-
-## RTRO: Behavioral Obfuscation as Optional Extension
-
-### What RTRO Is
-
-RTRO (Real-Time Resource Obfuscation) is a kernel-integrated behavioral obfuscation layer that operates alongside execution to confuse external observation of system behavior. RTRO intercepts and transforms externally visible system signals without modifying actual execution.
-
-**Core Principle:**
-The system executes normally. Only what can be observed externally about execution is obfuscated.
-
-**What RTRO Does:**
-- Operates at the kernel boundary to intercept observable signals
-- Randomizes reported metrics including CPU usage, memory patterns, and event attribution
-- Obscures container activity attribution in system interfaces
-- Blurs correlation between observed signals and specific container activity
-- Runs alongside execution without touching execution itself
-
-**What RTRO Does NOT Do:**
-- Introduce artificial delays to any tasks
-- Modify actual CPU execution timing
-- Force all executions to look statistically similar
-- Trade performance for obfuscation
-- Create resource starvation through padding
-
-### When RTRO Is Appropriate
-
-RTRO is appropriate when an adversarial observer exists who could exploit behavioral signals. Multi-user networked systems are the primary context.
-
-### When RTRO Is Not Needed
-
-Single-user air-gapped systems have no adversarial observer. In these environments, RTRO adds overhead without providing security benefit. The isolation architecture of HIP provides all needed protection, and RTRO is not included.
-
-### RTRO Architecture Position
-
-```
-[ Container ]
-     ↓
-[ Kernel Arbitration ]
-     ↓
-[ RTRO Layer (Obfuscation) ] ← Present in adversarial environments
-     ↓
-[ Observable Outputs / Interfaces ]
-```
-
-### Hardware-Level Limitations
-
-RTRO obfuscates software-visible metrics and kernel-level observability. Hardware-level signals including cache timing, branch prediction behavior, and power consumption patterns remain outside software control and represent hardware-level side channels. HIP's architecture minimizes the structured information available at these channels through the elimination of global locks and shared state, but cannot eliminate hardware physics entirely.
+**Lightweight Handshake Mode:** Security policies cannot be modified by running processes. Authority structure appropriate to the deployment model. Control metadata protected by isolation boundaries. Policy changes event-logged.
 
 ---
 
@@ -401,58 +424,135 @@ RTRO obfuscates software-visible metrics and kernel-level observability. Hardwar
 
 ### Architecture as the Source of Quantum-Like Properties
 
-The quantum-like computational properties that HIP enables are not features added to the system. They are properties that emerge when traditional coordination mechanisms are removed. Understanding this distinction is essential: HIP does not implement quantum-inspired algorithms or quantum-like features. HIP implements architectural principles that, as a consequence of removing coordination bottlenecks, create conditions for computational behavior that is analogous to what quantum computing theoretically provides.
+The quantum-like computational properties that HIP enables are not features added to the system. They are properties that emerge when traditional coordination mechanisms are removed. HIP does not implement quantum-inspired algorithms. HIP removes coordination bottlenecks, and the resulting computational environment naturally exhibits behavior analogous to what quantum computing theoretically promises but practically cannot deliver.
 
 ### Why Current Quantum Computing Is a Practical Dead End
 
-Quantum computing attempts to harness actual quantum mechanical phenomena. The theoretical promise is genuine. The engineering reality imposes fundamental obstacles that become more severe rather than more manageable as systems attempt to scale.
+Quantum computing attempts to harness actual quantum mechanical phenomena. The engineering obstacles are fundamental, not temporary.
 
-**Decoherence Is Physics, Not Engineering:**
-Every quantum bit interacts with its environment. Each interaction is a potential decoherence event that destroys quantum state. Adding qubits makes coherence exponentially harder to maintain. Extending computation time makes coherence exponentially harder to maintain. Both scale against you simultaneously. This is not a temporary engineering challenge—it is fundamental physics.
+**Decoherence is physics, not engineering:** Every quantum bit interacts with its environment. Each interaction is a potential decoherence event. Adding qubits makes coherence exponentially harder to maintain. Extending computation time makes coherence exponentially harder to maintain. Both scale against the goal simultaneously. Refrigeration to millikelvin temperatures, electromagnetic shielding beyond precision instruments, and coherence times measured in microseconds when practical computations require sustained operation — these constraints intensify as systems scale.
 
-**Error Correction Consumes Its Own Gains:**
-Because qubits decohere, quantum computers require error correction. Current approaches require hundreds to thousands of physical qubits per logical qubit. Error correction overhead grows exponentially with system complexity rather than linearly. The gap between current capability and practical application is not a matter of incremental improvement—it is a gap that scales against improvement.
+**Error correction overhead is unrecoverable:** Current approaches require hundreds to thousands of physical qubits per logical qubit. This overhead grows exponentially with system complexity. The gap between current capability and practical application is not a matter of incremental improvement.
 
-**The Engineering Requirements Cannot Scale:**
-Refrigeration to millikelvin temperatures, electromagnetic shielding beyond what precision instruments require, vibration isolation beyond precision manufacturing, and coherence times in microseconds when practical computations require hours. These constraints do not ease as systems scale—they intensify.
+**Collapse mechanics impose unavoidable overhead:** Quantum collapse is physics-imposed, destructive, loses all information about non-selected states, and forces statistical reconstruction through repeated runs to build confidence in results.
 
-### What Quantum-Like Properties Actually Require
+### What HIP Provides Instead
 
-The properties that make quantum computing theoretically powerful are specific and can be understood independently of quantum mechanics:
+**Parallel pathway maintenance:** Multiple lanes per container allow multiple solution approaches to proceed simultaneously without global locks preventing serialization. The kernel's constrained view ensures lanes do not interfere with each other through kernel behavior. Applications explore multiple solution pathways simultaneously without coordination overhead.
 
-**Parallel Pathway Maintenance:** The ability to maintain multiple computational solution pathways simultaneously until logical resolution determines the optimal path. This does not require quantum superposition. It requires isolation that prevents pathways from interfering with each other.
+**Interference-free processing:** Isolation boundaries prevent cross-component interference by architecture. No shared state means no interference patterns. Independent execution without coordination bottlenecks is the default.
 
-**Interference-Free Processing:** The ability for distinct computational elements to proceed without creating overhead for each other. This does not require quantum entanglement. It requires isolation boundaries that prevent coordination overhead.
+**Non-deterministic correct execution:** Kernel selection among ready events uses entropy rather than time or ordering. Results are unpredictable but always correct — the kernel selects only among events valid for execution. No deterministic patterns constrain computational exploration.
 
-**Non-Deterministic But Correct Execution:** The ability to execute in an unpredictable order while guaranteeing correct results. This does not require quantum randomness. It requires entropy-based arbitration combined with isolation that prevents order from affecting correctness.
+**Application-controlled resolution without collapse:** Parallel pathways do not collapse. They resolve through application logic. All lane results are preserved. One run is sufficient. No statistical reconstruction is needed. The overhead of collapse mechanics is entirely absent.
 
-**Application-Controlled Resolution:** The ability to determine when parallel pathways should converge and how to use their results. This is distinct from quantum collapse, which is physics-imposed, destructive, and forces statistical reconstruction through repeated runs. Application-controlled resolution preserves all pathway results, requires only one run, and is entirely under application logic control.
+The overhead of quantum collapse: physics-imposed, information-destroying, requiring repeated runs, bounded by coherence time.
 
-### How HIP's Architecture Creates These Properties
+The overhead of HIP application-controlled resolution: zero. The application decides when to coordinate results.
 
-**Lane Architecture Enables Parallel Pathway Maintenance:**
-Multiple lanes per container allow multiple solution approaches to proceed simultaneously. No global locks prevent serialization. Event-driven coordination allows independent progress. The kernel's constraint of seeing only head events ensures lanes do not interfere with each other through kernel behavior. Applications can explore multiple solution pathways simultaneously without coordination overhead.
-
-**Isolation Boundaries Enable Interference-Free Processing:**
-Isolation boundaries prevent cross-component interference by architecture. Lightweight handshake channels maintain coordination without creating interference. No shared state means no interference patterns. Independent execution without coordination bottlenecks is the default rather than a special case.
-
-**Entropy-Based Scheduling Enables Non-Deterministic Correct Execution:**
-Kernel selection among ready events uses entropy rather than time or ordering. The result is unpredictable but always correct, since the kernel only selects among events that are valid for execution. No deterministic patterns are created that could be exploited or that would constrain parallel computation.
-
-**No Collapse Required:**
-Quantum computing requires measurement-induced collapse. This is physics-imposed, destroys the superposition state, loses information about all non-selected pathways, and requires statistical reconstruction through many runs. HIP's parallel pathways do not collapse. They resolve through application logic. The application decides when to examine results from parallel lanes. All pathway results are preserved. One run is sufficient. No statistical reconstruction is needed. The overhead of collapse mechanics is entirely absent.
-
-### The Practical Superiority of Quantum-Like Classical Computing
+### Why Quantum-Like Classical Computing Wins
 
 Quantum-like classical computing through HIP architecture is superior to quantum computing for practical computation:
 
-- No temperature requirements: operates at room temperature
-- No decoherence: parallel pathways persist indefinitely
-- No error correction overhead: isolation boundaries provide correctness without exponential overhead
-- No collapse overhead: application-controlled resolution preserves all information
-- Linear scaling: adding lanes scales linearly, not exponentially against itself
-- Controllable resolution: application determines when and how parallel results are combined
-- Standard hardware: operates on any processor architecture
+- No temperature requirements — operates at room temperature
+- No decoherence — parallel pathways persist indefinitely
+- No error correction overhead — isolation boundaries provide correctness without exponential overhead
+- No collapse overhead — application-controlled resolution preserves all information
+- Linear scaling — adding lanes scales linearly, not exponentially against the goal
+- Standard hardware — operates on any processor architecture
+
+---
+
+## Configuration Philosophy
+
+### Architecture vs Configuration
+
+HIP distinguishes precisely between what is architectural and what is configurable.
+
+**Architecturally immutable:**
+- No global locks
+- Event-driven kernel coordination through Catch and Release
+- Lane-based execution model
+- Isolation boundaries between containers
+- Channel-based inter-container communication
+- Weighted entropy selection mechanism
+- Single Ready Pool with selector-based routing
+
+These define HIP. A system without these properties is not implementing HIP.
+
+**Build-time configurable (feature flags — determines what code is compiled):**
+- Anti-starvation tracking mechanism
+- Full fairness tracking mechanism
+- Per-lane weight assignment
+- Communication mode (cryptographic or lightweight handshake)
+- Network stack
+- Authentication infrastructure
+- Multi-user isolation enforcement
+- Audit logging
+- RTRO behavioral obfuscation
+- User interface subsystems
+
+**Boot-time configurable (signed configuration — determines values used by compiled code):**
+- Weight values per class (system, user, background)
+- Anti-starvation threshold (when compiled in)
+- Resource limits per container
+- Per-lane weights (at container level, not system level)
+
+**Not configurable at runtime:** All configuration is loaded once at boot. Weights do not change during operation. This eliminates observable patterns from weight changes and eliminates the attack surface of runtime configuration.
+
+### Signed Configuration
+
+All boot-time configuration is signed with a key embedded in the firmware. Invalid signatures cause the system to fall back to compiled defaults. The security of configuration values is in the signature: an attacker who can modify a signed configuration file needs the signing key, which would also allow rebuilding the firmware with different compiled defaults. Signed configuration is equally secure to hardcoded values and significantly more flexible.
+
+---
+
+## Operational Profiles
+
+Operational profiles are convenience presets for common configuration combinations. They represent well-reasoned combinations of feature flags and default values appropriate for specific deployment contexts.
+
+**Maximum Isolation:** All weights equal (configurable via signed config, defaults to 1:1:1). Anti-starvation not compiled. Full fairness not compiled. RTRO compiled. Cryptographic IPC compiled. Multi-user isolation compiled. Audit logging compiled. Appropriate for adversarial multi-user networked environments.
+
+**Balanced:** System weight default 3, user default 1, background default 1 (configurable via signed config). Anti-starvation compiled, configurable threshold. Full fairness not compiled. RTRO optional. Cryptographic IPC compiled. Appropriate for personal workstations and general-purpose systems.
+
+**Performance:** System weight default 5, user default 2, background default 1 (configurable). Anti-starvation compiled. Full fairness compiled. RTRO optional. Appropriate for limited hardware or systems where responsiveness is the priority.
+
+**Compute:** All weights equal by default (configurable). Anti-starvation optional. Per-lane weights compiled. Lightweight handshake IPC. No RTRO. No network stack by default. Appropriate for air-gapped single-user offline computation.
+
+---
+
+## Build-Time Configuration: Complete Reference
+
+### Scheduling Mechanisms
+
+| Flag | What It Enables |
+|---|---|
+| `anti-starvation` | Ready Pool wait time tracking and threshold priority override |
+| `full-fairness` | Proportional execution time tracking across all lanes |
+| `per-lane-weights` | Container-level lane weight assignment |
+
+### Security Mechanisms
+
+| Flag | What It Enables |
+|---|---|
+| `rtro` | Behavioral obfuscation layer at system interfaces |
+| `cryptographic-ipc` | Per-message cryptographic signing and verification |
+| `lightweight-handshake` | Channel-establishment-only authentication |
+| `user-authentication` | Identity verification infrastructure |
+| `multi-user-isolation` | User-level isolation between different users' containers |
+| `audit-logging` | Cryptographic event logging |
+| `cryptographic-entropy` | CSPRNG entropy for scheduling |
+| `hardware-rng` | Hardware random number generator |
+
+### Capability Mechanisms
+
+| Flag | What It Enables |
+|---|---|
+| `network-stack` | TCP/IP networking infrastructure |
+| `usb-stack` | USB device support |
+| `gui-subsystem` | Graphics and window management |
+| `cli-interface` | Text-based command line |
+| `audio-subsystem` | Sound input and output |
+| `dynamic-lanes` | Runtime lane creation on demand |
 
 ---
 
@@ -460,110 +560,45 @@ Quantum-like classical computing through HIP architecture is superior to quantum
 
 ### Current Implementation in Rust
 
-HIP-based systems are implemented in Rust targeting binary processor architectures. Rust provides memory safety without garbage collection overhead, zero-cost abstractions for performance-critical kernel code, a strong type system that catches errors at compile time, minimal runtime appropriate for kernel-level software, and strong embedded systems support across all relevant architectures.
+HIP-based systems are currently implemented in Rust targeting binary processor architectures. Rust provides memory safety without garbage collection overhead, zero-cost abstractions for performance-critical kernel code, a strong type system that catches errors at compile time, and minimal runtime appropriate for kernel-level software.
 
-### The Transition to Non-Binary Computation
+### Transition to Non-Binary Computation
 
 HIP's architectural principles do not assume binary computation. The isolation principles require only that components can be isolated, that components can communicate through defined channels, and that events can be coordinated without shared time or shared state. These requirements are substrate-agnostic.
 
-When non-binary hardware becomes practical—whether through analog, event-analog, or other non-binary substrate designs—HIP's architecture maps directly without requiring fundamental redesign:
+When non-binary hardware becomes practical — whether through analog, event-analog, or other non-binary substrate designs — HIP's architecture maps directly:
 
 - Lane architecture maps to parallel processing pathways in the native substrate
 - Event-driven coordination maps to natural substrate event mechanisms
 - Isolation boundaries map to substrate-specific protection mechanisms
-- Non-deterministic arbitration maps to substrate-provided entropy
+- Weighted entropy arbitration maps to substrate-provided entropy sources
 
-**Future Language Considerations:**
-Non-binary substrates may require or benefit from programming languages designed for their execution model rather than binary instruction sets. Research into non-binary programming paradigms, hardware description languages for custom non-binary processors, and transition pathways from current binary implementations represents an active area for future development. HIP's architectural principles provide the design foundation that any such language or substrate would need to implement.
-
-**Transition Path:**
-1. Initial and near-term: Rust on binary hardware across all supported architectures
-2. Medium-term: Develop substrate mappings for non-binary hardware as it becomes available
-3. Long-term: Port kernel-level components to non-binary substrates when practical hardware exists
-4. Application benefit: Applications written for HIP-based systems benefit from substrate improvements without architectural changes
+Non-binary substrates may require languages designed for their execution models rather than binary instruction sets. The architectural concepts — isolation, channels, lanes, weighted entropy, catch and release — are language-independent and can be expressed in any sufficiently capable language. What that language is for non-binary substrates remains an open research question that will be informed by the hardware characteristics of those substrates as they mature.
 
 ---
 
-## Implementation Roadmap
+## Theoretical Contributions
 
-### Phase 1: Theoretical Foundation Validation (Months 1 to 6)
+**Isolation Theory:** Systematic isolation enhances rather than constrains system capabilities, eliminating the assumed trade-off between security and performance.
 
-Formal specification of isolation properties including mathematical models for both communication modes. Performance model development for lane architecture under various workload types. Security model specification for cryptographic mode including formal proofs where applicable. Communication protocol specification for both modes including channel lifecycle management.
+**Catch and Release Theory:** Event-driven execution gating eliminates observable retry behavior, removing a primary source of timing side channels without any performance penalty from lock contention.
 
-Proof-of-concept implementations demonstrating basic isolation mechanisms, both communication mode implementations, component interaction through isolation boundaries, and security property validation.
+**Weighted Entropy Scheduling Theory:** A single scheduling mechanism spans the full range from maximum unpredictability to maximum fairness through configuration alone, eliminating the need for multiple scheduling algorithms.
 
-### Phase 2: Core Architecture Implementation (Months 4 to 12)
+**Quantum-Like Properties Through Architecture:** Quantum-like computational properties — parallel pathway maintenance, interference-free processing, non-deterministic correct execution, and application-controlled resolution without collapse — emerge from the elimination of coordination mechanisms rather than from the addition of quantum-inspired features.
 
-Hardware abstraction layer with isolation enforcement across target architectures. Inter-component communication infrastructure for both modes. Resource management with isolation guarantees. Lane scheduler with entropy-based arbitration. Application sandbox implementation.
-
-Security infrastructure for cryptographic mode. Lightweight handshake infrastructure for single-user mode. Audit and monitoring framework appropriate to each mode. Intrusion detection appropriate to cryptographic mode environments.
-
-### Phase 3: Advanced Capability Integration (Months 10 to 18)
-
-Advanced isolation feature implementation. Performance optimization through isolation refinement. Advanced privacy preservation in cryptographic mode. Sophisticated threat response capabilities for adversarial environments.
-
-Application development frameworks for isolated components. Migration tools for existing applications. Performance optimization tools and analysis frameworks.
-
-### Phase 4: Research and Ecosystem Development (Months 16 to 24)
-
-Formal verification of isolation properties. Quantum-resistant cryptographic mechanism integration. Distributed isolation extensions. Non-binary substrate compatibility research.
-
-Developer tools and documentation. Application certification frameworks. Community support infrastructure. Research publication and academic engagement.
+**No-Collapse Resolution Theory:** Application-controlled resolution of parallel pathways is superior to quantum collapse in every practical dimension: information preservation, run count, timing constraints, and application control. Collapse is physics overhead that architecture eliminates entirely.
 
 ---
 
-## Comparison Analysis: HIP vs Traditional Architectures
+## Conclusion
 
-### Security Comparison
+The Hybrid Isolation Paradigm represents a fundamental shift in operating system design philosophy — from balancing trade-offs between security, performance, and functionality, to achieving optimal characteristics in all three dimensions through the systematic elimination of coordination mechanisms.
 
-| Architecture | Isolation Level | Attack Surface | Recovery Capability |
-|---|---|---|---|
-| Monolithic | Component-level | Large | System restart |
-| Microkernel | Process-level | Medium | Component restart |
-| Layered | Layer-level | Medium | Layer restart |
-| Modular | Module-level | Variable | Module restart |
-| HIP Cryptographic Mode | Multi-dimensional | Minimal | Component isolation |
-| HIP Lightweight Mode | Multi-dimensional | Physical boundary | Component isolation |
-
-### Performance Comparison
-
-| Architecture | Coordination Overhead | Parallelism Quality | Scalability |
-|---|---|---|---|
-| Monolithic | Low individual, high under contention | Limited by shared state | Limited |
-| Microkernel | Higher IPC overhead | Better than monolithic | Good |
-| Layered | Medium | Medium | Medium |
-| Modular | Low individual, medium under contention | Similar to monolithic | Limited |
-| HIP Cryptographic Mode | Cryptographic overhead, zero contention | True parallel | Flexible |
-| HIP Lightweight Mode | Minimal, zero contention | True parallel | Flexible |
+One architecture. Configured for any deployment context through build-time feature flags and boot-time signed configuration. Maximum unpredictability or maximum fairness. Cryptographic verification or lightweight handshake. Behavioral obfuscation or raw performance. All expressions of the same unified isolation-first architecture.
 
 ---
 
-## Theoretical Contributions to Computer Science
-
-**Isolation Theory:** Demonstrates that systematic isolation enhances rather than constrains system capabilities.
-
-**Dual Communication Mode Theory:** Establishes that cryptographic and non-cryptographic communication modes can coexist within the same isolation framework, serving different threat models with appropriate overhead.
-
-**Performance Theory:** Proves that security measures can enhance performance when implemented through isolation rather than coordination.
-
-**Quantum-Like Properties Through Architecture:** Demonstrates that quantum-like computational properties emerge from the elimination of coordination mechanisms rather than the addition of quantum-inspired features.
-
-**No-Collapse Resolution:** Establishes that application-controlled resolution of parallel pathways is superior to quantum collapse mechanics in every practical dimension.
-
----
-
-## Conclusion: The Future of Operating System Architecture
-
-The Hybrid Isolation Paradigm represents a fundamental shift in operating system design philosophy from balancing trade-offs to achieving optimal characteristics through the systematic elimination of coordination mechanisms.
-
-HIP's dual communication modes ensure it serves both high-security networked environments through cryptographic inter-communication and performance-critical offline environments through lightweight handshake communication, with appropriate security-performance trade-offs for each deployment context.
-
-The quantum-like properties that emerge from HIP's architecture—parallel pathway maintenance, interference-free processing, non-deterministic correct execution, and application-controlled resolution—emerge naturally from architectural decisions rather than from added features. This makes HIP-based systems inherently capable of quantum-like computation without the practical impossibilities that limit quantum hardware.
-
----
-
-**Development Status:** Theoretical framework complete
-
+**Development Status:** Theoretical framework complete, seeking implementation teams
 **License:** Open theoretical framework for academic and commercial implementation
-
 **Contributing:** Theoretical contributions welcome through formal academic collaboration
