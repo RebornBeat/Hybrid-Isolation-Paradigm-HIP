@@ -569,31 +569,6 @@ All boot-time configuration is signed with a key embedded in the firmware. Inval
 
 ---
 
-## Operational Profiles
-
-Operational profiles are convenience presets for common configuration combinations.
-
-**Maximum Isolation:** All weights equal (1:1:1). Anti-starvation not compiled. Full fairness not compiled. RTRO compiled. Cryptographic IPC compiled. Multi-user isolation compiled. Audit logging compiled. SMT disabled. Appropriate for adversarial multi-user networked environments.
-
-**Balanced:** System weight default 3, user default 1, background default 1. Anti-starvation compiled. Full fairness not compiled. RTRO optional. Cryptographic IPC compiled. SMT disabled by default. Appropriate for personal workstations and general-purpose systems.
-
-**Performance:** System weight default 5, user default 2, background default 1. Anti-starvation compiled. Full fairness compiled. RTRO optional. SMT enabled. Appropriate for limited hardware or systems where responsiveness is the priority.
-
-**Compute:** All weights equal by default. Anti-starvation optional. Per-lane weights compiled. Lightweight handshake IPC. No RTRO. No network stack by default. SMT enabled. Appropriate for air-gapped single-user offline computation.
-
----
-
-## SMT Configuration by Profile
-
-| Profile | SMT Default | Reason |
-|---|---|---|
-| Maximum Isolation | Disabled | Eliminate hardware-level side channels entirely |
-| Balanced | Disabled | Security-conscious default; user may enable |
-| Performance | Enabled | Maximize throughput on limited hardware |
-| Compute | Enabled | Maximum parallel computation in air-gapped environment |
-
----
-
 ## Build-Time Configuration: Complete Reference
 
 ### Scheduling Mechanisms
@@ -603,6 +578,15 @@ Operational profiles are convenience presets for common configuration combinatio
 | `anti-starvation` | Ready Pool wait time tracking and threshold priority override |
 | `full-fairness` | Proportional execution time tracking across all lanes |
 | `per-lane-weights` | Container-level lane weight assignment |
+
+### Optional Performance Features
+
+| Flag | What It Enables | Profile Availability |
+|---|---|---|
+| `signal-coalescence` | Process multiple resource signals in one selector loop iteration | All profiles |
+| `signal-coalescence-threshold` | Time backstop for signal buffer | All profiles |
+| `class-resource-pools` | Per-class memory pool isolation | All profiles |
+| `class-core-affinity` | Route events to execution contexts by weight class | All profiles |
 
 ### Security Mechanisms
 
@@ -617,16 +601,232 @@ Operational profiles are convenience presets for common configuration combinatio
 | `cryptographic-entropy` | CSPRNG entropy for dispatch decisions |
 | `hardware-rng` | Hardware random number generator |
 
-### Capability Mechanisms
+### Capability Features
 
-| Flag | What It Enables |
+| Flag | What It Enables | Platform Variants |
+|---|---|---|
+| `network-stack` | TCP/IP networking infrastructure | CLI, GUI, Mobile |
+| `usb-stack` | USB device support | All (optional) |
+| `gui-subsystem` | Graphics and window management | GUI, Mobile (optional) |
+| `cli-interface` | Text-based command line | All (required) |
+| `audio-subsystem` | Sound input and output | All (optional) |
+| `dynamic-lanes` | Runtime lane creation on demand | All (optional) |
+| `touch-subsystem` | Touch input with isolation | Mobile (required), others (optional) |
+| `sensor-subsystem` | All sensors with per-sensor isolation | Mobile (required), others (optional) |
+| `mobile-connectivity` | Cellular, Bluetooth, NFC | Mobile (optional) |
+| `power-management` | Battery and power state management | Mobile (required), others (optional) |
+| `display-subsystem` | Display control with isolation | GUI (required), Mobile (required) |
+
+---
+
+## Feature Flag Matrix
+
+Feature flags are not independent. Some combinations are valid, others are prohibited:
+
+### Valid Feature Combinations
+
+| Feature | Can Combine With | Cannot Combine With |
+|---|---|---|
+| `anti-starvation` | `signal-coalescence`, `signal-coalescence-threshold`, `full-fairness`, `class-resource-pools`, `class-core-affinity` | (none) |
+| `full-fairness` | `anti-starvation`, `signal-coalescence`, `signal-coalescence-threshold`, `class-resource-pools`, `class-core-affinity` | `per-lane-weights` (different use cases) |
+| `per-lane-weights` | `signal-coalescence`, `signal-coalescence-threshold`, `class-resource-pools`, `class-core-affinity` | `full-fairness` (different use cases) |
+| `signal-coalescence` | All scheduling features | (none) |
+| `signal-coalescence-threshold` | All scheduling features | (none) |
+| `class-resource-pools` | All features | (none) |
+| `class-core-affinity` | All features | (none) |
+| `rtro` | All features | (none) |
+| `cryptographic-ipc` | `user-authentication`, `multi-user-isolation`, `audit-logging` | `lightweight-handshake` |
+| `lightweight-handshake` | `per-lane-weights` | `cryptographic-ipc`, `user-authentication`, `multi-user-isolation` |
+
+**All capability features are mutually compatible.** Any combination of the 11 capability features can be compiled together. Capability features do not affect scheduling or security semantics.
+
+### Shared Infrastructure Opportunities
+
+When multiple timing-related features are compiled together, they can share infrastructure:
+
+| Features Together | Shared Infrastructure |
 |---|---|
-| `network-stack` | TCP/IP networking infrastructure |
-| `usb-stack` | USB device support |
-| `gui-subsystem` | Graphics and window management |
-| `cli-interface` | Text-based command line |
-| `audio-subsystem` | Sound input and output |
-| `dynamic-lanes` | Runtime lane creation on demand |
+| `anti-starvation` + `signal-coalescence-threshold` | Share timing source and threshold check logic |
+| `anti-starvation` + `full-fairness` | Share execution time tracking |
+| `anti-starvation` + `signal-coalescence-threshold` + `full-fairness` | Unified timing subsystem |
+
+This sharing is an optimization, not a requirement. Each feature works independently.
+
+### Handoff Mode Requirements
+
+| Handoff Mode | Required Features | Prohibited Features |
+|---|---|---|
+| `handoff-cryptographic` | `cryptographic-entropy` | `lightweight-handshake` |
+| `handoff-lightweight` | (none) | `handoff-cryptographic`, `rtro`, `multi-user-isolation`, `audit-logging` |
+
+### Security Feature Dependencies
+
+| Feature | Requires | Enables |
+|---|---|---|
+| `rtro` | `cryptographic-entropy` | (none) |
+| `cryptographic-ipc` | `cryptographic-entropy` | `audit-logging` (optional) |
+| `multi-user-isolation` | `user-authentication`, `cryptographic-ipc` | (none) |
+| `audit-logging` | `cryptographic-ipc` | (none) |
+
+### Custom Build Matrix Example
+
+A custom build might combine features from different profiles:
+
+```
+cargo build --no-default-features \
+  --features "anti-starvation,signal-coalescence,per-lane-weights,cli-interface,cryptographic-entropy,handoff-lightweight"
+```
+
+This creates a Compute-like profile with:
+- Anti-starvation for fairness
+- Signal coalescence for throughput
+- Per-lane weights for application control
+- Lightweight handoff for air-gapped use
+- No RTRO, no multi-user, no network
+
+### Testing Custom Flag Combinations
+
+```
+cargo run --package builder -- --verify-features \
+  --features "anti-starvation,signal-coalescence,class-core-affinity"
+```
+
+Validates that the feature combination is legal before building.
+
+---
+
+## Platform Variants
+
+CIBOS supports three platform variants. Variants are feature sets, not separate systems:
+
+### CIBOS-CLI: Command Line Interface
+
+Appropriate for: servers, embedded systems, compute-focused systems, power users
+
+Required features:
+- cli-interface
+
+Optional features:
+- network-stack
+- usb-stack
+- audio-subsystem
+
+All profiles support CIBOS-CLI.
+
+### CIBOS-GUI: Desktop Computing
+
+Appropriate for: personal workstations, developer machines, general-purpose desktops
+
+Required features:
+- gui-subsystem
+- display-subsystem
+- cli-interface
+
+Optional features:
+- network-stack
+- usb-stack
+- audio-subsystem
+- touch-subsystem (for touch-enabled displays)
+
+All profiles support CIBOS-GUI.
+
+### CIBOS-MOBILE: Smartphone and Tablet
+
+Appropriate for: smartphones, tablets, mobile devices
+
+Required features:
+- touch-subsystem
+- sensor-subsystem
+- display-subsystem
+- power-management
+- cli-interface
+
+Optional features:
+- mobile-connectivity (cellular, Bluetooth, NFC)
+- network-stack (WiFi)
+- audio-subsystem
+- gui-subsystem (if GUI framework needed)
+
+Recommended profiles: Maximum Isolation, Balanced
+Not recommended: Compute (mobile devices typically network-connected)
+
+**Important:** Platform variants are convenience presets. Any valid feature combination can be built. The variant labels describe common use cases, not system constraints.
+
+---
+
+## Operational Profiles
+
+Operational profiles are convenience presets for common configuration combinations.
+
+### Maximum Isolation
+
+All weights equal (1:1:1). Anti-starvation not compiled. Full fairness not compiled. RTRO compiled. Cryptographic IPC compiled. Multi-user isolation compiled. Audit logging compiled. SMT disabled. Appropriate for adversarial multi-user networked environments.
+
+**Optional features (can be added via custom build):**
+- None (security profile - no optional features recommended)
+
+**Platform variants:**
+- CIBOS-CLI: Required [cli-interface]
+- CIBOS-GUI: Required [gui-subsystem, display-subsystem, cli-interface]
+- CIBOS-MOBILE: Requires additional mobile features (touch-subsystem, sensor-subsystem, display-subsystem, power-management, cli-interface)
+
+### Balanced
+
+System weight default 3, user default 1, background default 1. Anti-starvation compiled. Full fairness not compiled. RTRO optional. Cryptographic IPC compiled. SMT disabled by default. Appropriate for personal workstations and general-purpose systems.
+
+**Optional features (can be added via custom build):**
+- `rtro` — Additional behavioral obfuscation
+- `signal-coalescence` — Improves throughput
+- `signal-coalescence-threshold` — Adds backstop for signal buffer
+- `class-resource-pools` — Isolates resource usage by class
+- `class-core-affinity` — Assigns cores to weight classes
+
+**Platform variants:**
+- CIBOS-CLI: Required [cli-interface], Optional [network-stack, usb-stack, audio-subsystem]
+- CIBOS-GUI: Required [gui-subsystem, display-subsystem, cli-interface], Optional [network-stack, audio-subsystem]
+- CIBOS-MOBILE: Required [touch-subsystem, sensor-subsystem, display-subsystem, power-management, cli-interface], Optional [mobile-connectivity, network-stack, audio-subsystem]
+
+### Performance
+
+System weight default 5, user default 2, background default 1. Anti-starvation compiled. Full fairness compiled. RTRO optional. SMT enabled. Appropriate for limited hardware or systems where responsiveness is the priority.
+
+**Optional features (can be added via custom build):**
+- `signal-coalescence` — Further improves throughput
+- `signal-coalescence-threshold` — Adds backstop for signal buffer
+- `class-resource-pools` — Isolates resource usage by class
+- `class-core-affinity` — Guarantees execution capacity per class
+
+**Platform variants:**
+- CIBOS-CLI: Required [cli-interface]
+- CIBOS-GUI: Optional [gui-subsystem, display-subsystem]
+- CIBOS-MOBILE: Optional (typically not used with Performance profile)
+
+### Compute
+
+All weights equal by default. Anti-starvation optional. Per-lane weights compiled. Lightweight handshake IPC. No RTRO. No network stack by default. SMT enabled. Appropriate for air-gapped single-user offline computation.
+
+**Optional features (can be added via custom build):**
+- `anti-starvation` — Prevents lane starvation
+- `signal-coalescence` — Improves throughput
+- `signal-coalescence-threshold` — Adds backstop for signal buffer
+- `class-resource-pools` — Isolates resource usage by class
+- `class-core-affinity` — Assigns cores to weight classes
+
+**Platform variants:**
+- CIBOS-CLI: Required [cli-interface]
+- CIBOS-GUI: Optional (compute-focused systems typically CLI-only)
+- CIBOS-MOBILE: Not applicable (compute profile for air-gapped computation)
+
+---
+
+## SMT Configuration by Profile
+
+| Profile | SMT Default | Reason |
+|---|---|---|
+| Maximum Isolation | Disabled | Eliminate hardware-level side channels entirely |
+| Balanced | Disabled | Security-conscious default; user may enable |
+| Performance | Enabled | Maximize throughput on limited hardware |
+| Compute | Enabled | Maximum parallel computation in air-gapped environment |
 
 ---
 
@@ -666,6 +866,40 @@ This would eliminate: cache coherence protocols, TLB shootdown, atomic memory op
 **Hardware Entropy Selection:** A hardware entropy selector that takes as input a bitmask of ready contexts and per-context weights, and produces a selected context ID in a single clock cycle. This is an instruction, not a software routine — eliminating 100-500 cycles of software overhead per selection and making the selection invisible to software-level observation.
 
 **Hardware Catch and Release:** Resource tracking hardware that automatically monitors resource availability against per-context requirements. When a context needs a resource, the hardware stalls it without software intervention. When the resource becomes available, the hardware automatically makes the context eligible. This reduces the latency of catch and release from microseconds to cycles.
+
+**Hardware Signal Coalescence:** Current software implementation processes signals in ~125 cycles per signal when coalesced. HIP-native hardware can reduce this to single-digit cycles:
+
+- DMA engine collects resource signals directly
+- Hardware buffer accumulates signals
+- Configurable threshold or timer triggers batch notification
+- Single interrupt to selector for entire batch
+
+Expected improvement: 10-50x reduction in signal processing overhead.
+
+Importantly, hardware signal coalescence remains **opportunistic**:
+- No waiting for more signals
+- No artificial delays
+- Processes what has arrived, when it arrives
+- Hardware-level batching of natural signal bursts
+
+The threshold feature maps to a hardware register providing a backstop:
+- Register holds threshold duration
+- Hardware tracks oldest signal age
+- When threshold exceeded, immediate interrupt regardless of batch size
+- Same principle as software threshold but nanosecond precision
+
+This eliminates the software loop entirely. Signal processing becomes a single interrupt with batch payload, processed in microseconds rather than per-signal overhead.
+
+Hardware can also share timing infrastructure between signal threshold and anti-starvation, just as software does when both features are compiled.
+
+**Hardware Sensor Isolation:** For mobile variants, sensor isolation in hardware:
+- Each sensor has dedicated isolated channel to container
+- Hardware-enforced per-access authorization
+- No software involvement in sensor data routing
+- Camera/microphone indicators in hardware
+- Sensor data never crosses container boundaries in hardware
+
+This extends the isolation-first architecture to sensors natively.
 
 ### Non-Binary Substrate Opportunities
 
